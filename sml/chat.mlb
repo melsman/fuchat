@@ -20,4 +20,5 @@ Capture.sml
 Progress.sml
 Session.sml
 Protocol.sml
+Benchmark.sml
 Main.sml

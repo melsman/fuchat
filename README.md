@@ -11,7 +11,8 @@ The chat app has support for
  - Thinking mode on/off
  - Tool calling of simple futhark entry points
 
-The default model is Qwen3-0.6B and currently needs around 6GB of VRAM
+The default model is Qwen3-0.6B. Memory use depends on precision and context
+size; see the Standard ML host instructions below for a 4GB GPU configuration.
 
 
 ## Usage
@@ -95,10 +96,10 @@ url = {https://github.com/diku-dk/futhark}
 
 The SML host uses MLKit and smlfut to call the existing Futhark engine through
 its C API. It loads local, little-endian GGUF v2/v3 Qwen3 models containing
-unquantized f16/f32 tensors and currently runs f32 inference. It supports
+unquantized f16/f32 tensors and runs f32 or f16 inference. It supports
 multi-turn Qwen3 chat, thinking mode, Futhark tool calls, and streaming output.
 Commands are `quit`, `clear`, `think`, `nothink`, `show`, and `hide`.
-GPU/f16 validation is the remaining port milestone.
+The C, multicore, and CUDA backends can be selected at build time.
 
 ### Build and run
 
@@ -112,6 +113,30 @@ make SMLFUT=$HOME/gits/smlfut/smlfut
 ./build/chat-sml --model Qwen3-0.6B-f16.gguf --cs 2048
 ```
 
+The defaults are `FUTHARK_BACKEND=c TYPE=f32`. To build for an NVIDIA GPU:
+
+```sh
+export CUDA_HOME=/usr/local/cuda
+export CPATH="$CUDA_HOME/include${CPATH:+:$CPATH}"
+export LIBRARY_PATH="$CUDA_HOME/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+make FUTHARK_BACKEND=cuda TYPE=f16
+./build/cuda-f16/chat-sml --model Qwen3-0.6B-f16.gguf --cs 1024
+```
+
+CUDA requires the NVIDIA driver and CUDA development toolkit, including NVRTC.
+See the [Futhark CUDA documentation](https://futhark.readthedocs.io/en/latest/man/futhark-cuda.html).
+Select `TYPE=f32` for full precision, or `FUTHARK_BACKEND=multicore` for parallel
+CPU execution. In f16 mode, matrix weights and the KV cache use half precision;
+normalization weights remain f32, matching `qwen-f16.fut`.
+
+Each backend/precision has its own `build/BACKEND-TYPE/` executable, bindings,
+and object caches. `build/chat-sml` points to the last selected executable.
+Application SML sources are copied into each variant to isolate MLKit's object
+cache; edit the originals in `sml/`, not the generated copies. CUDA kernel
+caches are stored in `qwen-cuda-f32.cache` or `qwen-cuda-f16.cache` in the working
+directory. These are disposable and are ignored by Git.
+
 Use a model already on disk; the host does not download model weights.
 For a single response with a generation limit:
 
@@ -120,7 +145,7 @@ For a single response with a generation limit:
 ```
 
 `--cnt` controls the number of tokens per generation batch (default 5).
-`--cs` sets the KV-cache capacity (default 8192). Weights plus the f32 cache
+`--cs` sets the KV-cache capacity (default 1024 on CUDA, 8192 on CPU). Weights plus the f32 cache
 require several GB of memory for Qwen3-0.6B; choose a smaller context when
 needed. Full prompts are checked before inference, and generation stops at
 EOS, the generation limit, or the context limit. `clear` resets conversation
@@ -183,6 +208,12 @@ make check-conversation PYTHON=.venv/bin/python
 make check-model PYTHON=.venv/bin/python MODEL=Qwen3-0.6B-f16.gguf
 ```
 
+The same backend/precision selectors apply to checks, for example:
+
+```sh
+make FUTHARK_BACKEND=cuda TYPE=f16 check-model PYTHON=.venv/bin/python
+```
+
 `check-parity` creates a tiny deterministic two-layer GGUF with shuffled tensor
 ordering. It compares weight shapes and sampled values, token IDs and decoded
 text, pre-tokenizer splits, basic chat templates, fixed-token generation,
@@ -205,6 +236,56 @@ use the intended Qwen splitting rules. The SML NFC implementation uses Unicode
 17; older Rust normalization tables in Python tokenizers may differ for newly
 introduced characters. The tests check the Kirat Rai normalization explicitly
 against its Unicode 17 result.
+
+### Comparing host performance
+
+The benchmark driver needs the Python test requirements. Run one GPU workload
+at a time and retain the raw results outside the checkout:
+
+```sh
+.venv/bin/python tests/benchmark.py --exe build/cuda-f16/chat-sml \
+  --backend cuda --type f16 --model Qwen3-0.6B-f16.gguf \
+  --context 1024 --tokens 32 --runs 3 --out /tmp/fuchat-cuda-f16
+```
+
+Both hosts receive identical token IDs, clear logical cache state between
+repetitions, perform one warmup, and decode one token per entry call. Generated
+IDs must match. Prefill timing includes the first generated token; generation
+throughput measures subsequent tokens. The report contains median rates,
+individual timings, generated IDs/text, and startup/loading times. Loading
+includes different host-specific initialization and diagnostic work, so those
+times should be interpreted separately from inference throughput.
+
+GPU memory is sampled with `nvidia-smi` every 100 ms, including loading and
+warmup. The recorded peak is approximate total device usage, including desktop
+processes; baseline usage is also recorded. This is not an allocator-level peak
+measurement. Smaller contexts help fit the model on GPUs with limited VRAM.
+
+### ThinkPad CUDA measurements
+
+Measured on 2026-11-01 with the NVIDIA RTX A500 Laptop GPU (4 GiB), CUDA 12.8,
+Futhark 0.28.2, MLKit 4.7.26, and smlfut 1.6.5. Qwen3-0.6B-f16.gguf was used
+for both precisions, with a 1024-token context, a 20-token non-thinking prompt,
+32 generated tokens, one warmup, and three measured repetitions. Both hosts
+produced identical IDs within each precision; f32 and f16 need not agree.
+
+| Precision | Host | Prompt tokens/s | Decode tokens/s | Peak GPU MiB |
+| --- | --- | ---: | ---: | ---: |
+| f32 | MLKit | 14.44 | 1.16 | 3771 |
+| f32 | Python | 10.14 | 0.60 | 3771 |
+| f16 | MLKit | 58.65 | 10.01 | 2527 |
+| f16 | Python | 58.49 | 10.01 | 2527 |
+
+Rates are medians using the methodology above. Peak memory includes an 11 MiB
+desktop baseline. These results describe this configuration, not tuned GPU
+kernel performance. f16 provides the practical configuration for this 4 GiB
+GPU; its warm inference rates are effectively equal between hosts.
+
+SML loading took about 40 seconds for f32 and 53 seconds for f16; Python took
+about 11 and 6 seconds respectively. Those initialization paths do different
+work. The SML loader currently converts each tensor value, including a
+half-to-f32-to-half conversion for f16 matrices, leaving room to improve
+startup independently of inference.
 
 ### Unicode category data
 

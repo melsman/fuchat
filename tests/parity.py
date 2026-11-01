@@ -84,7 +84,7 @@ def sml(exe, model, *args, input=None, success=True):
     return p
 
 
-def check_weights(exe, model, reader):
+def check_weights(exe, model, reader, precision="f32"):
     lines = sml(exe, model, '--weights', '--cs', 64).stdout.splitlines()
     assert len(lines) == 14
     for line in lines:
@@ -101,6 +101,8 @@ def check_weights(exe, model, reader):
         # Avoid a complete flattened/transposed copy of a large weight field.
         points = [0, min(1, t.size - 1), t.size // 3, t.size // 2, t.size - 1]
         expected = np.array([t[np.unravel_index(i, t.shape)] for i in points], dtype=np.float32)
+        if precision == 'f16' and name not in ['output_norm', 'attn_norm', 'ffn_norm', 'q_norm', 'k_norm']:
+            expected = expected.astype(np.float16).astype(np.float32)
         got = np.array([float(x.replace('~', '-')) for x in values.split(',')], dtype=np.float32)
         np.testing.assert_array_equal(got, expected, err_msg=name)
     print('14 weight shapes and sampled values match')
@@ -159,15 +161,15 @@ def check_render(exe, model, reader, work):
     print(f'{len(cases)} basic Qwen chat renderings match Jinja')
 
 
-def check_inference(exe, model, reader, tokenizer, work):
-    # Build an independent server with the same generated sequential C backend.
+def check_inference(exe, model, reader, tokenizer, work, backend="c", precision="f32"):
+    # Build an independent server with the selected backend and precision.
     server_path = work / 'qwen-server'
-    subprocess.run(['futhark', 'c', '--server', 'qwen-f32.fut', '-o', str(server_path)], check=True)
+    subprocess.run(['futhark', backend, '--server', f'qwen-{precision}.fut', '-o', str(server_path)], check=True)
     old = chat.futhark_server.Server
     chat.futhark_server.Server = lambda *args: old(str(server_path))
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            llm = chat.LLM(reader, 'f32', 64, 0)
+            llm = chat.LLM(reader, precision, 64, 0)
     finally:
         chat.futhark_server.Server = old
     steps, expected = [], []
@@ -221,7 +223,7 @@ def check_inference(exe, model, reader, tokenizer, work):
     return answers, prompts
 
 
-def check_eos(exe, work):
+def check_eos(exe, work, precision="f32"):
     model = work / 'eos-base.gguf'
     tiny_model(model)
     reader = GGUFReader(model)
@@ -230,7 +232,7 @@ def check_eos(exe, work):
     chat.futhark_server.Server = lambda *args: old(str(work / 'qwen-server'))
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            llm = chat.LLM(reader, 'f32', 64, 0)
+            llm = chat.LLM(reader, precision, 64, 0)
     finally:
         chat.futhark_server.Server = old
     try:
@@ -282,6 +284,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--exe', default='./build/chat-sml')
     p.add_argument('--model')
+    p.add_argument('--backend', default='c', choices=['c','cuda','multicore'])
+    p.add_argument('--type', default='f32', choices=['f32','f16'])
     args = p.parse_args()
     exe = Path(args.exe).resolve()
     with tempfile.TemporaryDirectory(prefix='fuchat-parity-') as d:
@@ -291,11 +295,11 @@ def main():
             tiny_model(model)
         reader = GGUFReader(model)
         check_bad_files(exe, model, work)
-        check_weights(exe, model, reader)
+        check_weights(exe, model, reader, args.type)
         tokenizer = check_tokenizer(exe, model, reader, work)
         check_render(exe, model, reader, work)
-        answers, prompts = check_inference(exe, model, reader, tokenizer, work)
-        check_eos(exe, work)
+        answers, prompts = check_inference(exe, model, reader, tokenizer, work, args.backend, args.type)
+        check_eos(exe, work, args.type)
         check_chat(exe, model, answers, prompts)
     print('All host parity checks passed')
 

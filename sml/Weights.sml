@@ -23,23 +23,25 @@ structure Weights = struct
         val pending = ref ([] : (unit -> unit) list)
         fun cleanup () = List.app (fn free => free ()) (!pending)
         fun own free array = (pending := (fn () => free array) :: !pending; array)
-        fun field names expected permute =
+        fun field allocate update convert names expected permute =
             let
               val tensors = List.map (Gguf.tensor model) names
               val () = List.app (fn (t:Gguf.tensor) =>
                   if #shape t = expected then () else Util.fail ("unexpected tensor shape: " ^ #name t)) tensors
               val perBlock = List.foldl (op *) 1 expected
-              val out = Real32Array.array (List.length tensors*perBlock, Real32.fromInt 0)
+              val out = allocate (List.length tensors*perBlock, convert (Real32.fromInt 0))
               val () = Util.log ("Loading " ^ hd names)
               fun read ([],_) = ()
                 | read (t::rest,i) =
-                    (Gguf.readTensor model r t out (fn j => i*perBlock + permute j); read (rest,i+1))
+                    (Gguf.readTensorInto model r t (fn (i,x) => update(out,i,convert x)) (fn j => i*perBlock + permute j); read (rest,i+1))
               val () = read (tensors,0)
             in out
             end
-        fun single name expected permute = field [name ^ ".weight"] expected permute
+        fun matrix names expected permute = field Matrices.Array.array Matrices.Array.update Matrices.fromReal32 names expected permute
+        fun normal names expected = field Real32Array.array Real32Array.update (fn x => x) names expected (fn i => i)
+        fun single name expected permute = matrix [name ^ ".weight"] expected permute
         fun blockNames name = List.tabulate (b,fn i => "blk." ^ Int.toString i ^ "." ^ name ^ ".weight")
-        fun block name expected permute = field (blockNames name) expected permute
+        fun block name expected permute = matrix (blockNames name) expected permute
         fun transpose columns rows i = (i mod columns)*rows + i div columns
         fun attention heads i =
             let val row = i div d
@@ -47,15 +49,16 @@ structure Weights = struct
             end
         fun a1 data n = own qwen.Real32Array1.free (qwen.Real32Array1.new ctx (Real32ArraySlice.full data) n)
         fun a2 data shape = own qwen.Real32Array2.free (qwen.Real32Array2.new ctx (Real32ArraySlice.full data) shape)
-        fun a3 data shape = own qwen.Real32Array3.free (qwen.Real32Array3.new ctx (Real32ArraySlice.full data) shape)
-        fun a4 data shape = own qwen.Real32Array4.free (qwen.Real32Array4.new ctx (Real32ArraySlice.full data) shape)
+        fun a3 data shape = own Matrices.A3.free (Matrices.A3.new ctx (Matrices.Slice.full data) shape)
+        fun a4 data shape = own Matrices.A4.free (Matrices.A4.new ctx (Matrices.Slice.full data) shape)
+        fun m2 data shape = own Matrices.A2.free (Matrices.A2.new ctx (Matrices.Slice.full data) shape)
         fun build () =
             let
-              val token_embd = a2 (single "token_embd" [v,d] (fn i => i)) (v,d)
-              val output_norm = a1 (single "output_norm" [d] (fn i => i)) d
-              val output = a2 (single "output" [v,d] (transpose d v)) (d,v)
-              val attn_norm = a2 (block "attn_norm" [d] (fn i => i)) (b,d)
-              val ffn_norm = a2 (block "ffn_norm" [d] (fn i => i)) (b,d)
+              val token_embd = m2 (single "token_embd" [v,d] (fn i => i)) (v,d)
+              val output_norm = a1 (normal ["output_norm.weight"] [d]) d
+              val output = m2 (single "output" [v,d] (transpose d v)) (d,v)
+              val attn_norm = a2 (normal (blockNames "attn_norm") [d]) (b,d)
+              val ffn_norm = a2 (normal (blockNames "ffn_norm") [d]) (b,d)
               val ffn_gate = a3 (block "ffn_gate" [f,d] (transpose d f)) (b,d,f)
               val ffn_up = a3 (block "ffn_up" [f,d] (transpose d f)) (b,d,f)
               val ffn_down = a3 (block "ffn_down" [d,f] (transpose f d)) (b,f,d)
@@ -63,8 +66,8 @@ structure Weights = struct
               val attn_k = a4 (block "attn_k" [kh*dh,d] (attention kh)) (b,kh,d,dh)
               val attn_v = a4 (block "attn_v" [kh*dh,d] (attention kh)) (b,kh,d,dh)
               val attn_output = a3 (block "attn_output" [d,h*dh] (transpose (h*dh) d)) (b,h*dh,d)
-              val q_norm = a2 (block "attn_q_norm" [dh] (fn i => i)) (b,dh)
-              val k_norm = a2 (block "attn_k_norm" [dh] (fn i => i)) (b,dh)
+              val q_norm = a2 (normal (blockNames "attn_q_norm") [dh]) (b,dh)
+              val k_norm = a2 (normal (blockNames "attn_k_norm") [dh]) (b,dh)
             in qwen.Opaque.Params.new ctx
                  {token_embd=token_embd,output_norm=output_norm,output=output,
                   attn_norm=attn_norm,ffn_norm=ffn_norm,ffn_gate=ffn_gate,ffn_up=ffn_up,

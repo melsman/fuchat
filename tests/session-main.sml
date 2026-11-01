@@ -29,7 +29,7 @@ fun number object key default = case Json.get object key of Json.Number n => Uti
 fun flag object key default = case Json.get object key of Json.Bool b => b | _ => default
 fun process test =
     let
-      val ctx = qwen.Context.new qwen.Config.default
+      val ctx = qwen.Context.new (Matrices.config ())
       val cached = ref (Vector.fromList [] : int vector)
       val prompts = ref ([]:Json.t list)
       val executions = ref ([]:Json.t list)
@@ -80,6 +80,6 @@ fun process test =
              ("prompts",Json.Array (List.rev (!prompts))),
              ("progress",Json.Array (List.rev (!progress))),
              ("executions",Json.Array (List.rev (!executions)))])
-    in Util.finally run (fn () => qwen.Context.free ctx) end
+    in Util.finally run (fn () => (qwen.Context.sync ctx; qwen.Context.free ctx)) end
 val () = Protocol.lines (List.nth(CommandLine.arguments (),1))
     (fn line => print (Json.toString (process (Json.fromString line)) ^ "\n"))

@@ -121,7 +121,7 @@ structure Gguf = struct
         (Real16.toLarge (PackReal16Little.fromBytes
           (Word8Vector.fromList [Word8.fromInt (h mod 256),Word8.fromInt (h div 256)]))))
   fun elements (t:tensor) = List.foldl (op *) 1 (#shape t)
-  fun readTensor (model:model) (r:reader) (t:tensor) dst permute =
+  fun readTensorInto (model:model) (r:reader) (t:tensor) update permute =
       let
         val width = case #kind t of 0 => 4 | 1 => 2
                     | _ => Util.fail ("quantized tensor unsupported: " ^ #name t)
@@ -149,7 +149,7 @@ structure Gguf = struct
                 fun value i = if width = 4 then PackReal32Little.subVec (bytes,i)
                               else Real32Array.sub (half,Word8.toInt (Word8Vector.sub(bytes,2*i))
                                                        + 256*Word8.toInt (Word8Vector.sub(bytes,2*i+1)))
-                val () = Util.for count (fn i => Real32Array.update (dst,permute (done+i),value i))
+                val () = Util.for count (fn i => update (permute (done+i),value i))
               in loop (done+count)
               end
       in loop 0

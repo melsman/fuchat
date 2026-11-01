@@ -2,12 +2,14 @@ structure Main = struct
   fun run arguments =
       let
         val modelFile = ref "Qwen3-0.6B-f16.gguf"
-        val context = ref 8192
+        val context = ref (if qwen.backend="cuda" then 1024 else 8192)
         val count = ref 5
         val limit = ref 8192
         val thinking = ref false
         val tools = ref false
         val maxToolRounds = ref 8
+        val benchmarkCount = ref 32
+        val benchmarkRuns = ref 3
         val system = ref ""
         val prompt = ref (NONE:string option)
         val mode = ref "chat"
@@ -30,6 +32,9 @@ structure Main = struct
           | parse ("--max-tool-rounds"::s::rest) = (maxToolRounds:=Util.int s; parse rest)
           | parse ("--system"::s::rest) = (system:=s; parse rest)
           | parse ("--prompt"::s::rest) = (prompt:=SOME s; parse rest)
+          | parse ("--benchmark"::s::rest) = (mode:="benchmark"; fixture:=s; parse rest)
+          | parse ("--benchmark-tokens"::s::rest) = (benchmarkCount:=Util.int s; parse rest)
+          | parse ("--benchmark-runs"::s::rest) = (benchmarkRuns:=Util.int s; parse rest)
           | parse ("--weights"::rest) = (mode:="weights"; parse rest)
           | parse ("--encode"::s::rest) = (mode:="encode"; fixture:=s; parse rest)
           | parse ("--decode"::s::rest) = (mode:="decode"; fixture:=s; parse rest)
@@ -38,7 +43,7 @@ structure Main = struct
           | parse ("--render-test"::s::rest) = (mode:="render-test"; fixture:=s; parse rest)
           | parse (s::_) = Util.fail ("unknown or incomplete argument: " ^ s)
         val () = parse arguments
-        val () = if !context>0 andalso !count>0 andalso !limit>0 andalso !maxToolRounds>0 then () else Util.fail "counts and context size must be positive"
+        val () = if !context>0 andalso !count>0 andalso !limit>0 andalso !maxToolRounds>0 andalso !benchmarkCount>0 andalso !benchmarkRuns>0 then () else Util.fail "counts and context size must be positive"
         fun renderTests () = Protocol.lines (!fixture) (fn line =>
             let
               val rendered =
@@ -59,6 +64,7 @@ structure Main = struct
             in print (Protocol.hex rendered ^ "\n") end)
         fun withModel () =
             let
+              val () = Util.log ("Backend: " ^ qwen.backend ^ ", precision: " ^ Matrices.precision)
               val model = Gguf.load (!modelFile)
               fun withTokenizer () =
                   let val tokenizer = Tokenizer.create model
@@ -74,11 +80,13 @@ structure Main = struct
                                   ^ "\t" ^ String.concatWith "," (List.map Protocol.hex pieces) ^ "\n") end)
                     | _ => withEngine model (SOME tokenizer)
                   end
-            in if !mode="weights" orelse !mode="trace" then withEngine model NONE else withTokenizer ()
+            in if !mode="weights" orelse !mode="trace" orelse !mode="benchmark" then withEngine model NONE else withTokenizer ()
             end
         and withEngine model tokenizer =
             let
+              val loadStart = Time.now ()
               val engine = Engine.openModel model (!context)
+              val loadSeconds = Time.toReal (Time.-(Time.now (),loadStart))
               fun trace line =
                   if line="clear" then Engine.clear engine
                   else case String.fields (fn c => c = #"\t") line of
@@ -89,6 +97,9 @@ structure Main = struct
               fun action () =
                   if !mode="weights" then Inspect.weights (#params engine)
                   else if !mode="trace" then Protocol.lines (!fixture) trace
+                  else if !mode="benchmark" then
+                    print (Json.toString (Benchmark.run engine (Protocol.parseIds (Util.readFile (!fixture)))
+                                           (!benchmarkCount) (!benchmarkRuns) loadSeconds) ^ "\n")
                   else interactive engine (valOf tokenizer)
             in Util.finally action (fn () => Engine.close engine)
             end

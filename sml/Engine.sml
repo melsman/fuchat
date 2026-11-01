@@ -6,7 +6,7 @@ structure Engine = struct
       let
         val () = if size > 0 then () else Util.fail "context size must be positive"
         val dim = Weights.dimensions model
-        val ctx = qwen.Context.new qwen.Config.default
+        val ctx = qwen.Context.new (Matrices.config ())
         val params = Weights.load ctx model handle ex => (qwen.Context.free ctx; raise ex)
         val cache = qwen.Entry.init ctx
             (Int64.fromInt (#blocks dim),Int64.fromInt (#kvHeads dim),Int64.fromInt size,Int64.fromInt (#headDim dim))
@@ -16,7 +16,7 @@ structure Engine = struct
       end
   fun close (engine:t) =
       if !(#closed engine) then ()
-      else (#closed engine := true;
+      else (qwen.Context.sync (#ctx engine); #closed engine := true;
             (case !(#cache engine) of NONE => () | SOME c => qwen.Opaque.Cache.free c);
             #cache engine := NONE; qwen.Opaque.Params.free (#params engine); qwen.Context.free (#ctx engine))
   fun clear (engine:t) = #tokens engine := Vector.fromList []

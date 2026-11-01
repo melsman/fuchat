@@ -9,3 +9,5 @@ MLB/
 
 /lib/
 __pycache__/
+
+/qwen-*.cache
