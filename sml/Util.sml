@@ -1,7 +1,7 @@
 structure Util = struct
   fun fail s = raise Fail s
   fun finally f cleanup =
-      let val result = f () handle ex => (cleanup (); raise ex)
+      let val result = f () handle ex => ((cleanup () handle _ => ()); raise ex)
       in cleanup (); result
       end
   fun for n f =

@@ -34,9 +34,10 @@ fun process line =
       if path="" then print "\n"
       else if String.isPrefix "$(SML_LIB)" path then print (path ^ "\n")
       else if String.isPrefix "../build/" path then
-        (print (quoted (OS.Path.concat(build,String.extract(path,9,NONE))));
-         if path="../build/qwen.sml" then print (quoted (stage ("sml/precision/" ^ precision ^ ".sml"))) else ())
-      else if String.isSuffix ".sml" path then print (quoted (stage (OS.Path.concat(sourceDir,path))))
+        print (quoted (OS.Path.concat(build,String.extract(path,9,NONE))))
+      else if String.isSuffix ".sml" path orelse String.isSuffix ".sig" path then
+        (print (quoted (stage (OS.Path.concat(sourceDir,path))));
+         if OS.Path.file path="Gguf.sml" then print (quoted (stage ("sml/precision/" ^ precision ^ ".sml"))) else ())
       else print (quoted (OS.Path.concat(sourceDir,path)))
     end
 fun loop () = case TextIO.inputLine stream of NONE => () | SOME line => (process line; loop ())

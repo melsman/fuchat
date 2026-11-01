@@ -32,7 +32,7 @@ def alphabet():
     return [mapping[b] for b in range(256)]
 
 
-def tiny_model(path, eos=257):
+def tiny_model(path, eos=257, matrix_dtype=np.float16):
     vocab = alphabet()
     types = [1] * 256
     for token in ['<|im_start|>', '<|im_end|>', '<think>', '</think>', '<tool_call>', '</tool_call>']:
@@ -68,7 +68,7 @@ def tiny_model(path, eos=257):
                             'attn_q_norm': (128,), 'attn_k_norm': (128,)}.items():
             shapes[f'blk.{b}.{name}.weight'] = shape
     for name, shape in shapes.items():
-        data = rng.uniform(0.5, 1.5, shape).astype(np.float32) if len(shape) == 1 else rng.normal(0, 0.1, shape).astype(np.float16)
+        data = rng.uniform(0.5, 1.5, shape).astype(np.float32) if len(shape) == 1 else rng.normal(0, 0.1, shape).astype(matrix_dtype)
         w.add_tensor(name, data)
     w.write_header_to_file()
     w.write_kv_data_to_file()

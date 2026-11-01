@@ -1,4 +1,4 @@
-structure Tokenizer = struct
+structure Tokenizer :> TOKENIZER = struct
   type t = {vocab:int Strings.t, bytes:string vector, byteIds:int vector,
             merges:(int * int) Pairs.t, specials:(string * int) list Array.array}
   fun byteAlphabet () =

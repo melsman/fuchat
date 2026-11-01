@@ -1,4 +1,4 @@
-structure Gguf = struct
+structure Gguf :> GGUF = struct
   datatype value = Integer of int | Text of string | Items of value vector | Other
   type reader = {fd:Posix.IO.file_desc, buffer:Word8Vector.vector ref,
                  index:int ref, position:int ref, size:int}
@@ -6,10 +6,16 @@ structure Gguf = struct
   type model = {path:string, metadata:(string * value) list, tensors:tensor list, data:int}
 
   fun openReader path : reader =
-      {fd=Posix.FileSys.openf (path,Posix.FileSys.O_RDONLY,Posix.FileSys.O.flags []),
-       buffer=ref (Word8Vector.fromList []), index=ref 0, position=ref 0,
-       size=Int.fromLarge (Position.toLarge (OS.FileSys.fileSize path))}
+      let val size = Int.fromLarge (Position.toLarge (OS.FileSys.fileSize path))
+          val buffer = ref (Word8Vector.fromList [])
+          val index = ref 0
+          val position = ref 0
+          val fd = Posix.FileSys.openf (path,Posix.FileSys.O_RDONLY,Posix.FileSys.O.flags [])
+      in {fd=fd,buffer=buffer,index=index,position=position,size=size} end
   fun close (r:reader) = Posix.IO.close (#fd r)
+  fun withReader (model:model) action =
+      let val reader = openReader (#path model)
+      in Util.finally (fn () => action reader) (fn () => close reader) end
   fun seek (r:reader) position =
       if position < 0 orelse position > #size r then Util.fail "GGUF seek outside file"
       else
@@ -121,13 +127,13 @@ structure Gguf = struct
         (Real16.toLarge (PackReal16Little.fromBytes
           (Word8Vector.fromList [Word8.fromInt (h mod 256),Word8.fromInt (h div 256)]))))
   fun elements (t:tensor) = List.foldl (op *) 1 (#shape t)
-  fun readTensorInto (model:model) (r:reader) (t:tensor) update permute =
+  fun readTensorWith unpack32 unpack16 (model:model) (r:reader) (t:tensor) update permute =
       let
         val width = case #kind t of 0 => 4 | 1 => 2
                     | _ => Util.fail ("quantized tensor unsupported: " ^ #name t)
         val n = elements t
         val start = #data model + #offset t
-        val () = if n <= (#size r - start) div width then () else Util.fail ("truncated tensor: " ^ #name t)
+        val () = if start >= #data model andalso start <= #size r andalso n <= (#size r - start) div width then () else Util.fail ("truncated tensor: " ^ #name t)
         val () = seek r start
         fun exact amount =
             let
@@ -146,12 +152,20 @@ structure Gguf = struct
               let
                 val count = Int.min (16384,n-done)
                 val bytes = exact (count*width)
-                fun value i = if width = 4 then PackReal32Little.subVec (bytes,i)
-                              else Real32Array.sub (half,Word8.toInt (Word8Vector.sub(bytes,2*i))
-                                                       + 256*Word8.toInt (Word8Vector.sub(bytes,2*i+1)))
+                val unpack = if width=4 then unpack32 else unpack16
+                fun value i = unpack (bytes,i)
                 val () = Util.for count (fn i => update (permute (done+i),value i))
               in loop (done+count)
               end
       in loop 0
       end
+  fun halfIndex (bytes,i) =
+      Word8.toInt (Word8Vector.sub(bytes,2*i)) + 256*Word8.toInt (Word8Vector.sub(bytes,2*i+1))
+  fun unpack32 (bytes,i) = Real32Array.sub (half,halfIndex(bytes,i))
+  fun readTensor32Into model reader tensor update permute =
+      readTensorWith PackReal32Little.subVec unpack32 model reader tensor update permute
+  fun readTensor16Into model reader tensor update permute = readTensorWith
+      (fn bytes => Real16.fromLarge IEEEReal.TO_NEAREST (Real32.toLarge (PackReal32Little.subVec bytes)))
+      PackReal16Little.subVec model reader tensor update permute
+
 end

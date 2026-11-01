@@ -13,7 +13,7 @@ CUDA_HOME ?= /usr/local/cuda
 MODEL ?= Qwen3-0.6B-f16.gguf
 BUILD = build/$(FUTHARK_BACKEND)-$(TYPE)
 UNICODE_MLB = lib/github.com/diku-dk/sml-unicode/unicode-normalise.mlb
-SML_SOURCES = $(wildcard sml/*.sml) sml/precision/$(TYPE).sml
+SML_SOURCES = $(wildcard sml/*.sml sml/*.sig) sml/precision/$(TYPE).sml
 LIBDIRS = $(CURDIR)/$(BUILD)
 LIBS = qwen,host,m,c,dl
 
@@ -31,7 +31,7 @@ else ifneq ($(FUTHARK_BACKEND),c)
 $(error Supported FUTHARK_BACKEND values are c, multicore, and cuda)
 endif
 
-.PHONY: all build/chat-sml check-sml check-parity check-model check-conversation clean-sml deps
+.PHONY: all build/chat-sml check-sml check-parity check-model check-conversation clean-sml deps check-host
 all: build/chat-sml
 
 # Compatibility shortcut; explicit variant paths remain available side by side.
@@ -86,13 +86,26 @@ $(BUILD)/ToolEntries.sml: $(BUILD)/qwen.json build/generate-tools
 	mv $@.tmp $@
 
 $(BUILD)/chat.mlb: sml/chat.mlb $(SML_SOURCES) build/generate-project | $(BUILD)
-	./build/generate-project "$(CURDIR)" "$(BUILD)" "$(TYPE)" $< > $@
+	./build/generate-project "$(CURDIR)" "$(BUILD)" "$(TYPE)" $< > $@.tmp
+	mv $@.tmp $@
 
 $(BUILD)/session.mlb: tests/session.mlb tests/session-main.sml $(SML_SOURCES) build/generate-project | $(BUILD)
-	./build/generate-project "$(CURDIR)" "$(BUILD)" "$(TYPE)" $< > $@
+	./build/generate-project "$(CURDIR)" "$(BUILD)" "$(TYPE)" $< > $@.tmp
+	mv $@.tmp $@
+
+$(BUILD)/host.mlb: tests/host.mlb tests/host-main.sml $(SML_SOURCES) build/generate-project | $(BUILD)
+	./build/generate-project "$(CURDIR)" "$(BUILD)" "$(TYPE)" $< > $@.tmp
+	mv $@.tmp $@
+
+$(BUILD)/host-test: $(BUILD)/host.mlb tests/host-main.sml $(SML_SOURCES) $(BUILD)/qwen.sig $(BUILD)/qwen.sml $(BUILD)/libqwen.a $(BUILD)/libhost.a
+	$(MLKIT) -o $@ -libdirs "$(LIBDIRS)" -libs '$(LIBS)' $(BUILD)/host.mlb
+
+check-host: $(BUILD)/chat-sml $(BUILD)/host-test
+	$(PYTHON) tests/host.py --exe ./$(BUILD)/chat-sml --host-exe ./$(BUILD)/host-test --type $(TYPE)
 
 $(BUILD)/check.mlb: sml/check.mlb $(SML_SOURCES) build/generate-project | $(BUILD)
-	./build/generate-project "$(CURDIR)" "$(BUILD)" "$(TYPE)" $< > $@
+	./build/generate-project "$(CURDIR)" "$(BUILD)" "$(TYPE)" $< > $@.tmp
+	mv $@.tmp $@
 
 $(BUILD)/check: $(BUILD)/check.mlb sml/check.sml $(SML_SOURCES) $(BUILD)/qwen.sig $(BUILD)/qwen.sml $(BUILD)/libqwen.a $(BUILD)/libhost.a
 	$(MLKIT) -o $@ -libdirs "$(LIBDIRS)" -libs '$(LIBS)' $(BUILD)/check.mlb
@@ -109,11 +122,11 @@ check-sml: $(BUILD)/check
 check-conversation: $(BUILD)/chat-sml $(BUILD)/session-test
 	$(PYTHON) tests/conversation.py --exe ./$(BUILD)/chat-sml --session-exe ./$(BUILD)/session-test
 
-check-parity: $(BUILD)/chat-sml $(BUILD)/session-test
+check-parity: $(BUILD)/chat-sml $(BUILD)/session-test check-host
 	$(PYTHON) tests/parity.py --exe ./$(BUILD)/chat-sml --backend $(FUTHARK_BACKEND) --type $(TYPE)
 	$(PYTHON) tests/conversation.py --exe ./$(BUILD)/chat-sml --session-exe ./$(BUILD)/session-test
 
-check-model: $(BUILD)/chat-sml $(BUILD)/session-test
+check-model: $(BUILD)/chat-sml $(BUILD)/session-test check-host
 	$(PYTHON) tests/parity.py --exe ./$(BUILD)/chat-sml --backend $(FUTHARK_BACKEND) --type $(TYPE) --model "$(MODEL)"
 	$(PYTHON) tests/conversation.py --exe ./$(BUILD)/chat-sml --session-exe ./$(BUILD)/session-test --model "$(MODEL)"
 

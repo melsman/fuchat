@@ -195,6 +195,31 @@ wrapper still uses C-int offsets. No parsing or tensor conversion is done in
 C. The generated bindings and objects are kept in `build/`; `make clean-sml`
 removes them. The downloaded `lib/` tree is ignored; `sml.pkg` pins its source.
 
+### Host modules and ownership
+
+`gguf.sig`, `weights.sig`, `engine.sig`, and `tokenizer.sig` define the public
+interfaces. GGUF models/readers, engines, and tokenizers are abstract; engine
+callers use `capacity` and `eos` rather than implementation records.
+
+`Options` parses arguments into a typed configuration without I/O. `Main`
+dispatches to `ChatApp` for interactive chat or `Diagnostics` for inspection,
+reference-test protocols, and benchmarking. `Host` shares startup between the
+two front ends. Existing command-line flags and chat commands are retained.
+
+`Resource` releases owned handles in reverse acquisition order, attempts every
+cleanup, and preserves an action's exception when cleanup also fails.
+`Gguf.withReader` and `Engine.withModel` bound resource lifetimes. Weight loading
+scopes temporary arrays; generation scopes input/output handles and transfers
+a replacement cache to the engine after output extraction succeeds. Diagnostic
+parameter projections are also scoped. `Engine.useContext` and `useParams`
+provide borrowed handles for tools and inspection; callbacks must not free or
+retain those handles. Failed inference closes the engine.
+
+f16 matrix tensors are unpacked directly into `Real16Array` with
+`PackReal16Little`, preserving their source bits and avoiding an f32 round trip. f32 source tensors use round-to-nearest
+conversion when loaded into f16 matrices. Normalization weights stay f32, and
+chunked reads and destination permutations still bound temporary memory.
+
 ### Validation
 
 The Python requirements are needed only for reference checks:
@@ -213,6 +238,11 @@ The same backend/precision selectors apply to checks, for example:
 ```sh
 make FUTHARK_BACKEND=cuda TYPE=f16 check-model PYTHON=.venv/bin/python
 ```
+
+`check-host` checks cleanup failure paths, engine lifetime, option validation,
+all 65,536 half bit patterns (including signed zeros and NaNs), chunk-boundary
+permutations, f32-to-f16 rounding, and preparation from f32 source matrices.
+Both `check-parity` and `check-model` include it.
 
 `check-parity` creates a tiny deterministic two-layer GGUF with shuffled tensor
 ordering. It compares weight shapes and sampled values, token IDs and decoded
@@ -261,7 +291,7 @@ warmup. The recorded peak is approximate total device usage, including desktop
 processes; baseline usage is also recorded. This is not an allocator-level peak
 measurement. Smaller contexts help fit the model on GPUs with limited VRAM.
 
-### ThinkPad CUDA measurements
+### Initial ThinkPad CUDA measurements
 
 Measured on 2026-11-01 with the NVIDIA RTX A500 Laptop GPU (4 GiB), CUDA 12.8,
 Futhark 0.28.2, MLKit 4.7.26, and smlfut 1.6.5. Qwen3-0.6B-f16.gguf was used
@@ -283,9 +313,25 @@ GPU; its warm inference rates are effectively equal between hosts.
 
 SML loading took about 40 seconds for f32 and 53 seconds for f16; Python took
 about 11 and 6 seconds respectively. Those initialization paths do different
-work. The SML loader currently converts each tensor value, including a
-half-to-f32-to-half conversion for f16 matrices, leaving room to improve
-startup independently of inference.
+work. These are the initial port measurements, before direct f16 loading was added;
+the follow-up measurements below cover the updated loader.
+
+### Direct f16 loader measurements
+
+| Host / loader | Engine loading (s) | Prompt tokens/s | Decode tokens/s | Peak GPU MiB |
+| --- | ---: | ---: | ---: | ---: |
+| SML, initial loader | 52.60 | 58.65 | 10.01 | 2527 |
+| SML, direct f16 loader | 49.24 | 79.05 | 13.19 | 2527 |
+| Python, reference | 5.97 | 57.16 | 9.96 | 2527 |
+
+The direct loader measured 49.24 seconds versus the initial 52.60 seconds;
+this is a modest change and the startup gap with Python remains substantial.
+Loading measures context, weight preparation, and cache initialization, with
+metadata/tokenizer work outside that interval. Throughput varied between runs;
+the Futhark kernels were unchanged. All generated IDs matched Python. These
+use the same context/prompt/output settings and measurement method as above.
+Final raw measurements are retained on the ThinkPad in
+`~/fuchat-test-tools/results/host-refactor/bench-cuda-f16-direct/`.
 
 ### Unicode category data
 

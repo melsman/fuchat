@@ -13,7 +13,7 @@ structure Benchmark = struct
               val promptSeconds = Time.toReal (Time.-(Time.now (),start))
               val decodeStart = Time.now ()
               fun loop (ids,generated,last) =
-                  if generated>=count orelse Vector.length ids> #size engine orelse last= #eos engine then ids
+                  if generated>=count orelse Vector.length ids> Engine.capacity engine orelse last= Engine.eos engine then ids
                   else let val next = Engine.generate engine ids 1
                            val out = #newTokens next
                        in if Vector.length out=0 then #ids next
@@ -30,6 +30,6 @@ structure Benchmark = struct
         val () = ignore (one ())
         val results = List.tabulate(runs,fn _ => one ())
       in Json.Object [("backend",Json.String qwen.backend),("precision",Json.String Matrices.precision),
-                       ("load_seconds",realNumber loadSeconds),("context",Json.Number(Int.toString (#size engine))),
+                       ("load_seconds",realNumber loadSeconds),("context",Json.Number(Int.toString (Engine.capacity engine))),
                        ("warmups",Json.Number "1"),("runs",Json.Array results)] end
 end
