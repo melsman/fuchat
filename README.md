@@ -90,3 +90,29 @@ url = {https://github.com/diku-dk/futhark}
   school={University of Copenhagen, Faculty of Science [Department of Computer Science]}
 }
 ```
+
+## Standard ML host (in progress)
+
+The SML host uses MLKit and smlfut to call the existing Futhark engine
+through its C API. The initial integration check uses the sequential C
+backend and does not load model weights or run a chat session.
+
+Requirements: Futhark, MLKit with `Real32Array` support, smlfut with the
+MLKit target, a C compiler, and `make`.
+
+```
+make check-sml
+```
+
+If smlfut is not installed on PATH, set its location explicitly:
+
+```
+make check-sml SMLFUT=$HOME/gits/smlfut/smlfut
+```
+
+The check calls a tool entry point, initializes and projects a KV cache,
+checks its dimensions, and releases its Futhark handles. Generated bindings,
+C objects, and executables are kept in `build/`.
+
+A complete host still needs GGUF loading and tensor preparation, compatible
+Qwen3 tokenization and chat formatting, and the interactive generation loop.

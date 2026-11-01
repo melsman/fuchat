@@ -1,0 +1,8 @@
+.venv/
+*.gguf
+/qwen-f32
+/qwen-f32.c
+/qwen-f16
+/qwen-f16.c
+/build/
+MLB/
