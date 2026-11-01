@@ -1,0 +1,16 @@
+$(SML_LIB)/basis/basis.mlb
+../build/qwen.sig
+../build/qwen.sml
+../sml/Util.sml
+../sml/resource.sig
+../sml/Resource.sml
+../sml/gguf.sig
+../sml/Gguf.sml
+../sml/TensorLayout.sml
+../sml/weights.sig
+../sml/Weights.sml
+../sml/engine.sig
+../sml/Engine.sml
+../sml/options.sig
+../sml/Options.sml
+host-main.sml

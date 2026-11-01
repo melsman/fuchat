@@ -5,3 +5,4 @@ gguf
 jinja2
 humanize
 tokenizers
+requests

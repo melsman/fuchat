@@ -19,7 +19,7 @@ import futhark_data
 import futhark_server
 import numpy as np
 
-from tokenizers import Tokenizer
+from tokenizers import Tokenizer, Regex
 from tokenizers.models import BPE
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 from tokenizers.processors import ByteLevel as ByteLevelPostProcessor
@@ -112,7 +112,7 @@ class LLM:
         ) -> Optional[bool]:
         self.server.cmd_free('params')
         self.server.cmd_free('cache')
-        return self.server.__exit(exc_type, exc_value, traceback)
+        return self.server.__exit__(exc_type, exc_value, traceback)
 
     def shared_prefix_length(self, arr1, arr2):
         min_len = min(len(arr1), len(arr2))
@@ -196,6 +196,32 @@ def download_from_huggingface(repo_id, filename, local_dir, revision="main"):
 
     return dest_path
 
+def make_tokenizer(reader):
+    # configure comptabible Tokenizer directly
+    ggml_tokens = reader.get_field("tokenizer.ggml.tokens").contents()
+    ggml_token_type = reader.get_field("tokenizer.ggml.token_type").contents()
+    ggml_merges = reader.get_field("tokenizer.ggml.merges").contents()
+    tokenizer = Tokenizer(BPE(
+        vocab={token: idx for idx, token in enumerate(ggml_tokens)},
+        merges=[tuple(merge.split()) for merge in ggml_merges],
+    ))
+    tokenizer.normalizer = NFC()
+    tokenizer.add_special_tokens([ggml_tokens[idx] for idx in range(len(ggml_tokens)) if ggml_token_type[idx] in (3,4)])
+    tokenizer.decoder = ByteLevelDecoder()
+    regex_pattern = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+    tokenizer.pre_tokenizer = Sequence([
+        Split(pattern=Regex(regex_pattern), behavior="isolated", invert=False),
+        ByteLevelPreTokenizer(add_prefix_space=False, trim_offsets=False, use_regex=False)
+    ])
+    tokenizer.post_processor = ByteLevelPostProcessor(
+        add_prefix_space=False,
+        trim_offsets=False,
+        use_regex=False
+    )
+
+    return tokenizer
+
+
 def main(
     model: str,
     type: str,
@@ -224,27 +250,7 @@ def main(
     # (if uncommented it will also need some changes as it AutoTokenizer has some API differences)
     #tokenizer = AutoTokenizer.from_pretrained(".", gguf_file=file)
 
-    # configure comptabible Tokenizer directly
-    ggml_tokens = reader.get_field("tokenizer.ggml.tokens").contents()
-    ggml_token_type = reader.get_field("tokenizer.ggml.token_type").contents()
-    ggml_merges = reader.get_field("tokenizer.ggml.merges").contents()
-    tokenizer = Tokenizer(BPE(
-        vocab={token: idx for idx, token in enumerate(ggml_tokens)},
-        merges=[tuple(merge.split()) for merge in ggml_merges],
-    ))
-    tokenizer.normalizer = NFC()
-    tokenizer.add_special_tokens([ggml_tokens[idx] for idx in range(len(ggml_tokens)) if ggml_token_type[idx] in (3,4)])
-    tokenizer.decoder = ByteLevelDecoder()
-    regex_pattern = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
-    tokenizer.pre_tokenizer = Sequence([
-        Split(pattern=regex_pattern, behavior="isolated", invert=False),
-        ByteLevelPreTokenizer(add_prefix_space=False, trim_offsets=False, use_regex=False)
-    ])
-    tokenizer.post_processor = ByteLevelPostProcessor(
-        add_prefix_space=False,
-        trim_offsets=False,
-        use_regex=False
-    )
+    tokenizer = make_tokenizer(reader)
 
     # prepare the chat jinja2 template
     # note that this template is not able to create tokens in an idempotent way
