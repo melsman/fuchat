@@ -1,0 +1,6 @@
+$(SML_LIB)/basis/basis.mlb
+../sml/Util.sml
+../sml/UnicodeCategories.sml
+../sml/Unicode.sml
+../sml/Protocol.sml
+text-main.sml

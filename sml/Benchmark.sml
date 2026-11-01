@@ -22,7 +22,7 @@ structure Benchmark = struct
               val all = if Vector.length out=0 then #ids first
                         else loop(#ids first,Vector.length out,Vector.sub(out,Vector.length out-1))
               val seconds = Time.toReal (Time.-(Time.now (),decodeStart))
-              val tokens = Vector.tabulate(Vector.length all-Vector.length input,fn i => Vector.sub(all,Vector.length input+i))
+              val tokens = VectorSlice.vector (VectorSlice.slice(all,Vector.length input,NONE))
             in Json.Object [("prompt_seconds",realNumber promptSeconds),("generation_seconds",realNumber seconds),
                  ("prompt_tokens",Json.Number(Int.toString(Vector.length input))),
                  ("generated_tokens",Json.Number(Int.toString(Vector.length tokens))),

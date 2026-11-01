@@ -218,7 +218,24 @@ retain those handles. Failed inference closes the engine.
 f16 matrix tensors are unpacked directly into `Real16Array` with
 `PackReal16Little`, preserving their source bits and avoiding an f32 round trip. f32 source tensors use round-to-nearest
 conversion when loaded into f16 matrices. Normalization weights stay f32, and
-chunked reads and destination permutations still bound temporary memory.
+tensor reads fill a reusable 64 KiB `Word8Array` with `Posix.IO.readArr`.
+Short reads continue into the same buffer, and GGUF strings use slice copies.
+Metadata and tensor directories stay in vectors instead of being copied to
+lists. A row wider than 64 KiB uses one additional row buffer.
+
+`TensorLayout` expresses row-major, transpose, and attention reshaping as
+contiguous destination runs. `Real16ArraySlice.modifyi` and
+`Real32ArraySlice.modifyi` fill those runs, checking destination bounds per
+slice and removing per-element scatter-index division. Decoders borrow the
+input buffer only during each row-batch callback; no full raw-tensor copy is
+needed. Input byte decoding still uses checked Basis packing operations.
+
+Cached token-vector copies use `VectorSlice.vector`, and the common-prefix
+scan uses `VectorSlice.findi`. Unicode scalar parsing initializes its result
+vector directly after counting leading bytes. Token decoding copies into a
+sized character buffer; UTF-8 cleanup copies spans into a lazy buffer only
+when replacement is needed and returns valid input unchanged. BPE heap/link
+updates and Unicode-category binary searches retain indexed access.
 
 ### Validation
 
@@ -241,7 +258,11 @@ make FUTHARK_BACKEND=cuda TYPE=f16 check-model PYTHON=.venv/bin/python
 
 `check-host` checks cleanup failure paths, engine lifetime, option validation,
 all 65,536 half bit patterns (including signed zeros and NaNs), chunk-boundary
-permutations, f32-to-f16 rounding, and preparation from f32 source matrices.
+permutations, wide-row buffers, f32-to-f16 rounding, and preparation from f32
+source matrices. It also compares every cell of row-major, transpose, and
+attention layouts across partial batches and head boundaries. A separate
+text driver checks 4,690 malformed UTF-8, valid-prefix streaming, and scalar
+offset cases against Python's codecs.
 Both `check-parity` and `check-model` include it.
 
 `check-parity` creates a tiny deterministic two-layer GGUF with shuffled tensor
@@ -332,6 +353,27 @@ the Futhark kernels were unchanged. All generated IDs matched Python. These
 use the same context/prompt/output settings and measurement method as above.
 Final raw measurements are retained on the ThinkPad in
 `~/fuchat-test-tools/results/host-refactor/bench-cuda-f16-direct/`.
+
+### Bulk slice and buffer measurements
+
+| Host / loader | Engine loading (s) | Prompt tokens/s | Decode tokens/s | Peak GPU MiB |
+| --- | ---: | ---: | ---: | ---: |
+| SML, before bulk operations | 49.24 | 79.05 | 13.19 | 2527 |
+| SML, bulk slice/buffer loader | 22.43 | 58.42 | 10.01 | 2527 |
+| Python, reference | 5.93 | 58.10 | 10.02 | 2527 |
+
+Bulk operations reduced measured engine loading from 49.24 to 22.43 seconds
+(about 2.2 times faster). Warm generation remains approximately 10 tokens/s,
+matching the Python host, and all generated IDs match. The context, prompt,
+output length, warmup, and repetition counts follow the methodology above.
+The Futhark kernels are unchanged; throughput varied between laptop runs.
+
+A separate two-token startup probe completed in 21.87 seconds, including
+20.31 seconds of engine loading, with a maximum host resident set of about
+556 MiB (`/usr/bin/time -v`). The normal input buffer is 64 KiB; tensor output
+arrays are unchanged and no additional full-tensor copy is needed. Raw
+measurements and check logs are retained on the ThinkPad under
+`~/fuchat-test-tools/results/bulk-host/`.
 
 ### Unicode category data
 

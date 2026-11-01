@@ -40,9 +40,9 @@ structure Engine :> ENGINE = struct
   fun useParams (engine:t) action = (requireOpen engine; action (#params engine))
   fun clear (engine:t) = (requireOpen engine; #tokens engine := Vector.fromList [])
   fun prefix a b =
-      let val n = Int.min (Vector.length a,Vector.length b)
-          fun loop i = if i=n orelse Vector.sub(a,i) <> Vector.sub(b,i) then i else loop (i+1)
-      in loop 0 end
+      let val n = Int.min(Vector.length a,Vector.length b)
+      in case VectorSlice.findi (fn (i,value) => value<>Vector.sub(b,i)) (VectorSlice.slice(a,0,SOME n)) of
+           NONE => n | SOME (i,_) => i end
   fun generate (engine:t) ids requested =
       let
         val () = requireOpen engine
@@ -73,7 +73,7 @@ structure Engine :> ENGINE = struct
               val values = qwen.Int64Array1.values output
               val out = Vector.tabulate (Int64Array.length values,fn i => Int64.toInt (Int64Array.sub(values,i)))
               val all = Vector.concat [ids,out]
-              val cached = Vector.tabulate (Int.max (0,Vector.length all-1),fn i => Vector.sub(all,i))
+              val cached = VectorSlice.vector (VectorSlice.slice(all,0,SOME (Int.max(0,Vector.length all-1))))
               val () = #cache engine := NONE
               val () = qwen.Opaque.Cache.free cache
               val () = #cache engine := SOME newCache

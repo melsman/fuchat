@@ -23,10 +23,18 @@ structure Unicode = struct
          else (cp,i+len)
       end
   fun scalars s =
-      let fun loop (i,acc) = if i=String.size s then Vector.fromList (List.rev acc)
-                            else let val (cp,j) = next s i in loop(j,(cp,i)::acc) end
-      in loop(0,[])
-      end
+      let
+        (* Count leading bytes with a bulk traversal, then initialize the exact
+           vector directly. next validates every scalar; the final offset also
+           rejects a trailing/standalone continuation byte. *)
+        val count = CharVector.foldl (fn (c,n) =>
+            if c< #"\128" orelse c>= #"\192" then n+1 else n) 0 s
+        val offset = ref 0
+        val result = Vector.tabulate(count,fn _ =>
+            let val i = !offset
+                val (cp,j) = next s i
+            in offset:=j; (cp,i) end)
+      in if !offset=String.size s then result else raise Chr end
   fun category cp =
       let
         val table = UnicodeCategories.ranges
@@ -48,8 +56,22 @@ structure Unicode = struct
   fun clean final s =
       let
         val n = String.size s
-        fun loop (i,parts) =
-            if i=n then (String.concat (List.rev parts),"")
+        val buffer = ref (NONE:CharArray.array option)
+        fun append source first count out =
+            let val target = case !buffer of SOME a => a
+                           | NONE => let val a = CharArray.array(3*n,#"\000")
+                                     in buffer:=SOME a; a end
+                val () = CharArraySlice.copyVec
+                    {src=CharVectorSlice.slice(source,first,SOME count),dst=target,di=out}
+            in out+count end
+        fun finish first stop out tail =
+            case !buffer of
+              NONE => (if stop=n then s else String.substring(s,0,stop),tail)
+            | SOME target =>
+                let val used = append s first (stop-first) out
+                in (CharArraySlice.vector (CharArraySlice.slice(target,0,SOME used)),tail) end
+        fun loop (i,first,out) =
+            if i=n then finish first n out ""
             else
               let
                 val b = Char.ord (String.sub(s,i))
@@ -65,13 +87,14 @@ structure Unicode = struct
                 fun prefix j = if j=len orelse i+j=n orelse not (valid j) then j else prefix(j+1)
                 val consumed = if len=0 then 1 else prefix 1
               in
-                if len > 0 andalso consumed=len then loop(i+len,String.substring(s,i,len)::parts)
-                else if len > 0 andalso i+consumed=n andalso not final then
-                  (String.concat (List.rev parts),String.extract(s,i,NONE))
-                else loop(i+consumed,"\239\191\189"::parts)
+                if len>0 andalso consumed=len then loop(i+len,first,out)
+                else if len>0 andalso i+consumed=n andalso not final then
+                  finish first i out (String.extract(s,i,NONE))
+                else let val out = append s first (i-first) out
+                         val out = append "\239\191\189" 0 3 out
+                     in loop(i+consumed,i+consumed,out) end
               end
-      in loop(0,[])
-      end
+      in loop(0,0,0) end
   fun trim s =
       let
         val chars = scalars s

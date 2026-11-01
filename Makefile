@@ -100,8 +100,12 @@ $(BUILD)/host.mlb: tests/host.mlb tests/host-main.sml $(SML_SOURCES) build/gener
 $(BUILD)/host-test: $(BUILD)/host.mlb tests/host-main.sml $(SML_SOURCES) $(BUILD)/qwen.sig $(BUILD)/qwen.sml $(BUILD)/libqwen.a $(BUILD)/libhost.a
 	$(MLKIT) -o $@ -libdirs "$(LIBDIRS)" -libs '$(LIBS)' $(BUILD)/host.mlb
 
-check-host: $(BUILD)/chat-sml $(BUILD)/host-test
+build/text-test: tests/text.mlb tests/text-main.sml sml/Util.sml sml/Unicode.sml sml/UnicodeCategories.sml sml/Protocol.sml | build
+	$(MLKIT) -o $@ tests/text.mlb
+
+check-host: $(BUILD)/chat-sml $(BUILD)/host-test build/text-test
 	$(PYTHON) tests/host.py --exe ./$(BUILD)/chat-sml --host-exe ./$(BUILD)/host-test --type $(TYPE)
+	$(PYTHON) tests/text.py --exe ./build/text-test
 
 $(BUILD)/check.mlb: sml/check.mlb $(SML_SOURCES) build/generate-project | $(BUILD)
 	./build/generate-project "$(CURDIR)" "$(BUILD)" "$(TYPE)" $< > $@.tmp

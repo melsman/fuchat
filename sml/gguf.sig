@@ -11,10 +11,14 @@ signature GGUF = sig
   val tensor : model -> string -> tensor
   (* The reader is borrowed for the callback and always closed afterwards. *)
   val withReader : model -> (reader -> 'a) -> 'a
-  (* Destination indices implement reshape/transpose. f16 reads retain source
-     half bits; f32 source tensors are rounded to nearest when narrowed. *)
-  val readTensor32Into : model -> reader -> tensor ->
-      (int * Real32.real -> unit) -> (int -> int) -> unit
-  val readTensor16Into : model -> reader -> tensor ->
-      (int * Real16.real -> unit) -> (int -> int) -> unit
+  (* Rows arrive in ascending order. The callback receives first row, row
+     count, and a decoder indexed from 0 through count*columns-1. The decoder
+     borrows a reusable buffer and must not escape the callback. f16 source
+     bits are retained; narrowing f32 uses round-to-nearest. The reader
+     reuses a 64 KiB input buffer; a wider row uses one additional row buffer. Short reads
+     fill the same buffer. *)
+  val readTensor32Rows : model -> reader -> tensor -> int ->
+      (int * int * (int -> Real32.real) -> unit) -> unit
+  val readTensor16Rows : model -> reader -> tensor -> int ->
+      (int * int * (int -> Real16.real) -> unit) -> unit
 end

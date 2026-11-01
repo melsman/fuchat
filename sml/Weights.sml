@@ -26,30 +26,31 @@ structure Weights :> WEIGHTS = struct
           let
             val {blocks=b,vocab=v,embedding=d,feedForward=f,heads=h,kvHeads=kh,headDim=dh} = dimensions model
             fun own free array = Resource.own resources free array
-            fun field allocate update zero readTensor names expected permute =
+            fun field allocate fill zero readRows names expected layout =
                 let
                   val tensors = List.map (Gguf.tensor model) names
                   val () = List.app (fn (t:Gguf.tensor) =>
                       if #shape t = expected then () else Util.fail ("unexpected tensor shape: " ^ #name t)) tensors
                   val perBlock = List.foldl (op *) 1 expected
+                  val columns = List.last expected
+                  val rows = perBlock div columns
                   val out = allocate (List.length tensors*perBlock, zero)
                   val () = Util.log ("Loading " ^ hd names)
                   fun read ([],_) = ()
                     | read (t::rest,i) =
-                        (readTensor model r t (fn (i,x) => update(out,i,x)) (fn j => i*perBlock + permute j); read (rest,i+1))
+                        (readRows model r t columns (fn (first,count,get) =>
+                            TensorLayout.fill layout {rows=rows,columns=columns,first=first,count=count,offset=i*perBlock}
+                                              get (fill out)); read (rest,i+1))
                   val () = read (tensors,0)
                 in out
                 end
-            fun matrix names expected permute = field Matrices.Array.array Matrices.Array.update Matrices.zero Matrices.readTensorInto names expected permute
-            fun normal names expected = field Real32Array.array Real32Array.update (Real32.fromInt 0) Gguf.readTensor32Into names expected (fn i => i)
-            fun single name expected permute = matrix [name ^ ".weight"] expected permute
+            fun matrix names expected layout = field Matrices.Array.array Matrices.fill Matrices.zero Matrices.readRows names expected layout
+            fun fill32 array (start,count,get) =
+                Real32ArraySlice.modifyi (fn (i,_) => get i) (Real32ArraySlice.slice(array,start,SOME count))
+            fun normal names expected = field Real32Array.array fill32 (Real32.fromInt 0) Gguf.readTensor32Rows names expected TensorLayout.RowMajor
+            fun single name expected layout = matrix [name ^ ".weight"] expected layout
             fun blockNames name = List.tabulate (b,fn i => "blk." ^ Int.toString i ^ "." ^ name ^ ".weight")
-            fun block name expected permute = matrix (blockNames name) expected permute
-            fun transpose columns rows i = (i mod columns)*rows + i div columns
-            fun attention heads i =
-                let val row = i div d
-                in (row div dh)*d*dh + (i mod d)*dh + row mod dh
-                end
+            fun block name expected layout = matrix (blockNames name) expected layout
             fun a1 data n = own qwen.Real32Array1.free (qwen.Real32Array1.new ctx (Real32ArraySlice.full data) n)
             fun a2 data shape = own qwen.Real32Array2.free (qwen.Real32Array2.new ctx (Real32ArraySlice.full data) shape)
             fun a3 data shape = own Matrices.A3.free (Matrices.A3.new ctx (Matrices.Slice.full data) shape)
@@ -57,18 +58,18 @@ structure Weights :> WEIGHTS = struct
             fun m2 data shape = own Matrices.A2.free (Matrices.A2.new ctx (Matrices.Slice.full data) shape)
             fun build () =
                 let
-                  val token_embd = m2 (single "token_embd" [v,d] (fn i => i)) (v,d)
+                  val token_embd = m2 (single "token_embd" [v,d] TensorLayout.RowMajor) (v,d)
                   val output_norm = a1 (normal ["output_norm.weight"] [d]) d
-                  val output = m2 (single "output" [v,d] (transpose d v)) (d,v)
+                  val output = m2 (single "output" [v,d] TensorLayout.Transpose) (d,v)
                   val attn_norm = a2 (normal (blockNames "attn_norm") [d]) (b,d)
                   val ffn_norm = a2 (normal (blockNames "ffn_norm") [d]) (b,d)
-                  val ffn_gate = a3 (block "ffn_gate" [f,d] (transpose d f)) (b,d,f)
-                  val ffn_up = a3 (block "ffn_up" [f,d] (transpose d f)) (b,d,f)
-                  val ffn_down = a3 (block "ffn_down" [d,f] (transpose f d)) (b,f,d)
-                  val attn_q = a4 (block "attn_q" [h*dh,d] (attention h)) (b,h,d,dh)
-                  val attn_k = a4 (block "attn_k" [kh*dh,d] (attention kh)) (b,kh,d,dh)
-                  val attn_v = a4 (block "attn_v" [kh*dh,d] (attention kh)) (b,kh,d,dh)
-                  val attn_output = a3 (block "attn_output" [d,h*dh] (transpose (h*dh) d)) (b,h*dh,d)
+                  val ffn_gate = a3 (block "ffn_gate" [f,d] TensorLayout.Transpose) (b,d,f)
+                  val ffn_up = a3 (block "ffn_up" [f,d] TensorLayout.Transpose) (b,d,f)
+                  val ffn_down = a3 (block "ffn_down" [d,f] TensorLayout.Transpose) (b,f,d)
+                  val attn_q = a4 (block "attn_q" [h*dh,d] (TensorLayout.Attention dh)) (b,h,d,dh)
+                  val attn_k = a4 (block "attn_k" [kh*dh,d] (TensorLayout.Attention dh)) (b,kh,d,dh)
+                  val attn_v = a4 (block "attn_v" [kh*dh,d] (TensorLayout.Attention dh)) (b,kh,d,dh)
+                  val attn_output = a3 (block "attn_output" [d,h*dh] TensorLayout.Transpose) (b,h*dh,d)
                   val q_norm = a2 (normal (blockNames "attn_q_norm") [dh]) (b,dh)
                   val k_norm = a2 (normal (blockNames "attn_k_norm") [dh]) (b,dh)
                   val params = qwen.Opaque.Params.new ctx

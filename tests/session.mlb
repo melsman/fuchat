@@ -7,6 +7,7 @@ $(SML_LIB)/basis/basis.mlb
 ../sml/Resource.sml
 ../sml/gguf.sig
 ../sml/Gguf.sml
+../sml/TensorLayout.sml
 ../sml/weights.sig
 ../sml/Weights.sml
 ../sml/engine.sig

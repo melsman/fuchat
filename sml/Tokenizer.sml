@@ -156,8 +156,15 @@ structure Tokenizer :> TOKENIZER = struct
               end
       in loop(0,0,[])
       end
-  fun raw (t:t) ids = String.concat (Vector.foldr (fn (id,parts) =>
-      if id>=0 andalso id<Vector.length(#bytes t) then Vector.sub(#bytes t,id)::parts
-      else Util.fail "invalid token ID during decoding") [] ids)
+  fun raw (t:t) ids =
+      let val pieces = Vector.map (fn id =>
+              if id>=0 andalso id<Vector.length(#bytes t) then Vector.sub(#bytes t,id)
+              else Util.fail "invalid token ID during decoding") ids
+          val size = Vector.foldl (fn (s,n) => n+String.size s) 0 pieces
+          val out = CharArray.array(size,#"\000")
+          val _ = Vector.foldl (fn (piece,offset) =>
+              (CharArraySlice.copyVec {src=CharVectorSlice.full piece,dst=out,di=offset};
+               offset+String.size piece)) 0 pieces
+      in CharArray.vector out end
   fun decode t ids = #1 (Unicode.clean true (raw t ids))
 end

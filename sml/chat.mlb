@@ -7,6 +7,7 @@ resource.sig
 Resource.sml
 gguf.sig
 Gguf.sml
+TensorLayout.sml
 weights.sig
 Weights.sml
 engine.sig
