@@ -255,7 +255,7 @@ def check_eos(exe, work):
 def check_chat(exe, model, answers, prompts):
     p = sml(exe, model, '--cs', 128, '--max-new-tokens', 3,
             input='show\nhello\nhide\nagain\nclear\nhello\nquit\n')
-    expected = ('Qwen3 / MLKit. Commands: quit, clear, show, hide.\nchat> \nchat> '
+    expected = ('Qwen3 / MLKit. Commands: quit, clear, think, nothink, show, hide.\nchat> \nchat> '
                 + prompts[0] + '\n' + answers[0] + '\nchat> chat> ' + answers[1]
                 + '\nchat> Context cleared\nchat> ' + answers[0] + '\nchat> ')
     assert p.stdout == expected, (p.stdout, expected)

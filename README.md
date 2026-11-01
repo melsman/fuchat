@@ -96,9 +96,9 @@ url = {https://github.com/diku-dk/futhark}
 The SML host uses MLKit and smlfut to call the existing Futhark engine through
 its C API. It loads local, little-endian GGUF v2/v3 Qwen3 models containing
 unquantized f16/f32 tensors and currently runs f32 inference. It supports
-ordinary multi-turn chat, a fixed Qwen3 non-thinking chat format, streaming,
-and `quit`, `clear`, `show`, and `hide` commands. Thinking/tool-call handling
-and GPU/f16 validation are later port milestones.
+multi-turn Qwen3 chat, thinking mode, Futhark tool calls, and streaming output.
+Commands are `quit`, `clear`, `think`, `nothink`, `show`, and `hide`.
+GPU/f16 validation is the remaining port milestone.
 
 ### Build and run
 
@@ -126,6 +126,36 @@ needed. Full prompts are checked before inference, and generation stops at
 EOS, the generation limit, or the context limit. `clear` resets conversation
 and logical cache reuse without reloading weights.
 
+### Thinking and tools
+
+Thinking is off by default. Start with `--think`, or use `think` and `nothink`
+during a conversation. Reasoning is captured separately from the answer and
+hidden in normal output. `show` displays the full prompts and generated output,
+including reasoning and tool payloads; `hide` returns to answer-only output.
+Reasoning is retained during tool follow-ups and removed from older assistant
+messages when the next user turn is formatted, following the Qwen3 template.
+The host recomputes the shared token prefix so the KV cache remains consistent.
+
+Enable the available Futhark tools with `--tools`:
+
+```sh
+./build/chat-sml --model Qwen3-0.6B-f16.gguf --cs 2048 --tools
+```
+
+The build discovers entries named `tool_NAME_DESCRIPTION` with signature
+`(n: i64): i64` from the Futhark manifest and generates typed smlfut dispatch.
+The current tools are `sumN1` (sum of the first n integers) and `sumN2` (sum of
+their squares). Completed calls run after EOS, their results are added as tool
+messages, and generation resumes automatically. Multiple calls and successive
+tool rounds are supported. No tool executes unless `--tools` is enabled.
+
+Arguments must be integers from 0 through 1,000,000: these demo tools allocate
+an `iota(n+1)` array. Unknown tools and invalid arguments produce JSON error
+responses that the model can handle. Malformed or incomplete call blocks are
+reported without execution. `--max-tool-rounds N` limits tool batches per user
+turn (default 8); `--max-new-tokens` is a total generation budget across that
+turn's assistant/tool follow-ups. Context capacity is checked for each prompt.
+
 GGUF parsing, tensor transformations, byte-level BPE, and chat orchestration
 are implemented in SML. NFC comes from sml-unicode's `unicode-normalise.mlb`;
 a handwritten scanner implements the Qwen splitting rules using generated
@@ -146,6 +176,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 make check-sml SMLFUT=$HOME/gits/smlfut/smlfut
 make check-parity PYTHON=.venv/bin/python
+make check-conversation PYTHON=.venv/bin/python
 make check-model PYTHON=.venv/bin/python MODEL=Qwen3-0.6B-f16.gguf
 ```
 
@@ -156,6 +187,14 @@ cache reuse and invalidation, EOS, and bounded contexts against the Python
 host and a separately compiled Futhark server. It also exercises interactive
 multi-turn chat, show/hide, clear, and oversized-prompt rejection. `check-model`
 runs the same checks using the local model; it takes longer and uses more RAM.
+
+`check-conversation` is a fast, standalone reasoning/tool check. Scripted model
+token batches run through the production session loop, including real Futhark
+tool dispatch. The checks cover reasoning capture and hiding, show mode,
+multiple/successive calls, escaped JSON, invalid requests, disabled tools,
+budgets, context limits, and prefix invalidation when reasoning is removed.
+Both `check-parity` and `check-model` include these checks; full-model mode also
+compares the prompts against the GGUF's actual Jinja template.
 
 The reference host now wraps the splitting expression in `tokenizers.Regex`:
 passing a plain string treated the pattern as a literal. Both hosts therefore

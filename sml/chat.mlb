@@ -11,6 +11,12 @@ UnicodeCategories.sml
 Unicode.sml
 PreTokenizer.sml
 Tokenizer.sml
+Json.sml
+ToolCall.sml
 Chat.sml
+../build/ToolEntries.sml
+Tools.sml
+Capture.sml
+Session.sml
 Protocol.sml
 Main.sml

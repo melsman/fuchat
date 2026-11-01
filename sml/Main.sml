@@ -5,16 +5,19 @@ structure Main = struct
         val context = ref 8192
         val count = ref 5
         val limit = ref 8192
+        val thinking = ref false
+        val tools = ref false
+        val maxToolRounds = ref 8
         val system = ref ""
         val prompt = ref (NONE:string option)
         val mode = ref "chat"
         val fixture = ref ""
         fun help () =
             (print "Usage: build/chat-sml [--model FILE] [--cs N] [--cnt N] [--max-new-tokens N]\n\
-                   \                      [--system TEXT] [--prompt TEXT]\n\
+                   \                      [--system TEXT] [--prompt TEXT] [--think] [--tools] [--max-tool-rounds N]\n\
                    \       build/chat-sml --model FILE --encode TEXT_FILE\n\
                    \       build/chat-sml --model FILE --decode TOKEN_IDS\n\
-                   \Local unquantized Qwen3 GGUF, f32 inference. Commands: quit/clear/show/hide.\n";
+                   \Local unquantized Qwen3 GGUF, f32 inference. Commands: quit/clear/think/nothink/show/hide.\n";
              OS.Process.exit OS.Process.success)
         fun parse [] = ()
           | parse ("--help"::_) = help ()
@@ -22,6 +25,9 @@ structure Main = struct
           | parse ("--cs"::s::rest) = (context:=Util.int s; parse rest)
           | parse ("--cnt"::s::rest) = (count:=Util.int s; parse rest)
           | parse ("--max-new-tokens"::s::rest) = (limit:=Util.int s; parse rest)
+          | parse ("--think"::rest) = (thinking:=true; parse rest)
+          | parse ("--tools"::rest) = (tools:=true; parse rest)
+          | parse ("--max-tool-rounds"::s::rest) = (maxToolRounds:=Util.int s; parse rest)
           | parse ("--system"::s::rest) = (system:=s; parse rest)
           | parse ("--prompt"::s::rest) = (prompt:=SOME s; parse rest)
           | parse ("--weights"::rest) = (mode:="weights"; parse rest)
@@ -32,15 +38,25 @@ structure Main = struct
           | parse ("--render-test"::s::rest) = (mode:="render-test"; fixture:=s; parse rest)
           | parse (s::_) = Util.fail ("unknown or incomplete argument: " ^ s)
         val () = parse arguments
-        val () = if !context>0 andalso !count>0 andalso !limit>0 then () else Util.fail "counts and context size must be positive"
+        val () = if !context>0 andalso !count>0 andalso !limit>0 andalso !maxToolRounds>0 then () else Util.fail "counts and context size must be positive"
         fun renderTests () = Protocol.lines (!fixture) (fn line =>
             let
-              val fields = String.fields (fn c => c = #"\t") line
-              val generation = hd fields = "1"
-              fun message field = case String.fields (fn c => c = #":") field of
-                                    [role,content] => {role=role,content=Protocol.unhex content}
-                                  | _ => Util.fail "invalid render fixture"
-            in print (Protocol.hex (Chat.render (List.map message (tl fields)) generation) ^ "\n") end)
+              val rendered =
+                  if String.isPrefix "{" line then
+                    let val test = Json.fromString line
+                        val messages = List.map Chat.fromJson (Json.array (Json.get test "messages"))
+                        val thinking = case Json.get test "thinking" of Json.Bool b => b | _ => false
+                        val generation = case Json.get test "generation" of Json.Bool b => b | _ => false
+                        val tools = case Json.get test "tools" of Json.Array tools => tools | _ => []
+                    in Chat.renderWith {messages=messages,generation=generation,thinking=thinking,tools=tools} end
+                  else
+                    let val fields = String.fields (fn c => c = #"\t") line
+                        val generation = hd fields = "1"
+                        fun message field = case String.fields (fn c => c = #":") field of
+                                              [role,content] => Chat.simple role (Protocol.unhex content)
+                                            | _ => Util.fail "invalid render fixture"
+                    in Chat.render (List.map message (tl fields)) generation end
+            in print (Protocol.hex rendered ^ "\n") end)
         fun withModel () =
             let
               val model = Gguf.load (!modelFile)
@@ -78,64 +94,48 @@ structure Main = struct
             end
         and interactive engine tokenizer =
             let
-              val initial = if !system="" then [] else [{role="system",content= !system}]
+              val initial = if !system="" then [] else [Chat.simple "system" (!system)]
               val messages = ref initial
               val show = ref false
+              val () = if !tools then List.app (fn (entry:ToolEntries.entry) =>
+                          Util.log ("Tool " ^ #name entry ^ ": " ^ #description entry)) ToolEntries.all else ()
+              fun emit text = (print text; TextIO.flushOut TextIO.stdOut)
+              fun renderCurrent () = Chat.renderWith {messages= !messages,generation=false,thinking= !thinking,
+                                                       tools=if !tools then Tools.descriptions else []}
               fun respond input =
                   let
-                    val proposed = !messages @ [{role="user",content=input}]
-                    val text = Chat.render proposed true
-                    val ids = Tokenizer.encode tokenizer text
-                  in
-                    if Vector.length ids > !context then Util.log "Context is full; use clear or a shorter message."
-                    else
-                      let
-                        val () = if !show then (print (text ^ "\n"); TextIO.flushOut TextIO.stdOut) else ()
-                        val pending = ref ""
-                        val captured = ref ([]:int vector list)
-                        val total = ref 0
-                        val started = Time.now ()
-                        fun stream tokens =
-                            let val text = !pending ^ Tokenizer.raw tokenizer tokens
-                                val (ready,tail) = Unicode.clean false text
-                            in pending:=tail; print ready; TextIO.flushOut TextIO.stdOut end
-                        fun generate (ids,first) =
-                            if !total >= !limit orelse Vector.length ids > !context then ()
-                            else
-                              let
-                                val result = Engine.generate engine ids (Int.min (if first then 1 else !count,!limit- !total))
-                                val new = #newTokens result
-                                val n = Vector.length new
-                                val eos = n>0 andalso Vector.sub(new,n-1)= #eos engine
-                                val visible = if eos then Vector.tabulate(n-1,fn i => Vector.sub(new,i)) else new
-                                val () = if first then Util.log ("Reused " ^ Int.toString (#reused result) ^ " cached tokens") else ()
-                                val () = captured := visible :: !captured
-                                val () = total := !total+n
-                                val () = stream visible
-                              in if eos orelse n=0 then () else generate (#ids result,false)
-                              end
-                        val () = generate(ids,true)
-                        val () = print (#1 (Unicode.clean true (!pending)) ^ "\n")
-                        val answer = Unicode.trim (Tokenizer.decode tokenizer (Vector.concat (List.rev (!captured))))
-                        val () = messages := proposed @ [{role="assistant",content=answer}]
-                        val elapsed = Time.toReal (Time.-(Time.now (),started))
-                      in Util.log (Int.toString (!total) ^ " generated tokens in " ^ Real.toString elapsed ^ "s")
-                      end
-                  end
+                    val started = Time.now ()
+                    val options = {thinking= !thinking,tools= !tools,show= !show,count= !count,limit= !limit,
+                                   context= !context,maxToolRounds= !maxToolRounds}
+                    fun generate ids amount =
+                        let val result = Engine.generate engine ids amount
+                        in {ids= #ids result,newTokens= #newTokens result,reused= #reused result,eos= #eos engine} end
+                    fun execute (call:ToolCall.t) =
+                        let val result = Tools.run (!tools) (#ctx engine) call
+                        in Util.log ("Tool " ^ Json.quote (#name call) ^ ": " ^ result); result end
+                    val result = Session.reply tokenizer options generate execute emit Util.log
+                                               (!messages @ [Chat.simple "user" input])
+                    val () = if #total result=0 then () else messages:= #messages result
+                    val elapsed = Time.toReal (Time.-(Time.now (),started))
+                  in if #total result=0 then () else
+                       (Util.log ("Reused " ^ Int.toString (#reused result) ^ " cached tokens");
+                        Util.log (Int.toString (#total result) ^ " generated tokens in " ^ Real.toString elapsed ^ "s")) end
               fun loop () =
-                  (print "chat> "; TextIO.flushOut TextIO.stdOut;
+                  (emit "chat> ";
                    case TextIO.inputLine TextIO.stdIn of
                      NONE => ()
                    | SOME line =>
                      case Util.stripNewline line of
                        "quit" => ()
-                     | "clear" => (messages:=initial; Engine.clear engine; print "Context cleared\n"; loop ())
-                     | "show" => (show:=true; print (Chat.render (!messages) false ^ "\n"); loop ())
+                     | "clear" => (messages:=initial; Engine.clear engine; emit "Context cleared\n"; loop ())
+                     | "show" => (show:=true; emit (renderCurrent () ^ "\n"); loop ())
                      | "hide" => (show:=false; loop ())
+                     | "think" => (thinking:=true; emit "Thinking mode enabled\n"; loop ())
+                     | "nothink" => (thinking:=false; emit "Thinking mode disabled\n"; loop ())
                      | "" => loop ()
                      | input => (respond input; loop ()))
             in case !prompt of SOME input => respond input
-                             | NONE => (print "Qwen3 / MLKit. Commands: quit, clear, show, hide.\n"; loop ())
+                             | NONE => (emit "Qwen3 / MLKit. Commands: quit, clear, think, nothink, show, hide.\n"; loop ())
             end
       in if !mode="render-test" then renderTests () else withModel ()
       end
