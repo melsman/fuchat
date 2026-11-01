@@ -91,28 +91,87 @@ url = {https://github.com/diku-dk/futhark}
 }
 ```
 
-## Standard ML host (in progress)
+## Standard ML host
 
-The SML host uses MLKit and smlfut to call the existing Futhark engine
-through its C API. The initial integration check uses the sequential C
-backend and does not load model weights or run a chat session.
+The SML host uses MLKit and smlfut to call the existing Futhark engine through
+its C API. It loads local, little-endian GGUF v2/v3 Qwen3 models containing
+unquantized f16/f32 tensors and currently runs f32 inference. It supports
+ordinary multi-turn chat, a fixed Qwen3 non-thinking chat format, streaming,
+and `quit`, `clear`, `show`, and `hide` commands. Thinking/tool-call handling
+and GPU/f16 validation are later port milestones.
 
-Requirements: Futhark, MLKit with `Real32Array` support, smlfut with the
-MLKit target, a C compiler, and `make`.
+### Build and run
 
+Install Futhark, MLKit with `Real16`, `Real32Array`, and `PackReal32Little`
+support, smlfut with the MLKit target, smlpkg, a C compiler, and `make`.
+The build fetches the pinned sml-unicode v0.2.0 dependency using `smlpkg sync`.
+Python is not needed to build or run the SML host.
+
+```sh
+make SMLFUT=$HOME/gits/smlfut/smlfut
+./build/chat-sml --model Qwen3-0.6B-f16.gguf --cs 2048
 ```
-make check-sml
+
+Use a model already on disk; the host does not download model weights.
+For a single response with a generation limit:
+
+```sh
+./build/chat-sml --model Qwen3-0.6B-f16.gguf --prompt "Hello!" --max-new-tokens 64
 ```
 
-If smlfut is not installed on PATH, set its location explicitly:
+`--cnt` controls the number of tokens per generation batch (default 5).
+`--cs` sets the KV-cache capacity (default 8192). Weights plus the f32 cache
+require several GB of memory for Qwen3-0.6B; choose a smaller context when
+needed. Full prompts are checked before inference, and generation stops at
+EOS, the generation limit, or the context limit. `clear` resets conversation
+and logical cache reuse without reloading weights.
 
-```
+GGUF parsing, tensor transformations, byte-level BPE, and chat orchestration
+are implemented in SML. NFC comes from sml-unicode's `unicode-normalise.mlb`;
+a handwritten scanner implements the Qwen splitting rules using generated
+Unicode 17 letter/number ranges. A rank heap handles BPE merges, and streaming
+retains incomplete UTF-8 sequences between batches.
+
+`sml/large-file.c` supplies a checked 64-bit seek while MLKit's installed POSIX
+wrapper still uses C-int offsets. No parsing or tensor conversion is done in
+C. The generated bindings and objects are kept in `build/`; `make clean-sml`
+removes them. The downloaded `lib/` tree is ignored; `sml.pkg` pins its source.
+
+### Validation
+
+The Python requirements are needed only for reference checks:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 make check-sml SMLFUT=$HOME/gits/smlfut/smlfut
+make check-parity PYTHON=.venv/bin/python
+make check-model PYTHON=.venv/bin/python MODEL=Qwen3-0.6B-f16.gguf
 ```
 
-The check calls a tool entry point, initializes and projects a KV cache,
-checks its dimensions, and releases its Futhark handles. Generated bindings,
-C objects, and executables are kept in `build/`.
+`check-parity` creates a tiny deterministic two-layer GGUF with shuffled tensor
+ordering. It compares weight shapes and sampled values, token IDs and decoded
+text, pre-tokenizer splits, basic chat templates, fixed-token generation,
+cache reuse and invalidation, EOS, and bounded contexts against the Python
+host and a separately compiled Futhark server. It also exercises interactive
+multi-turn chat, show/hide, clear, and oversized-prompt rejection. `check-model`
+runs the same checks using the local model; it takes longer and uses more RAM.
 
-A complete host still needs GGUF loading and tensor preparation, compatible
-Qwen3 tokenization and chat formatting, and the interactive generation loop.
+The reference host now wraps the splitting expression in `tokenizers.Regex`:
+passing a plain string treated the pattern as a literal. Both hosts therefore
+use the intended Qwen splitting rules. The SML NFC implementation uses Unicode
+17; older Rust normalization tables in Python tokenizers may differ for newly
+introduced characters. The tests check the Kirat Rai normalization explicitly
+against its Unicode 17 result.
+
+### Unicode category data
+
+Only regeneration requires Python. Download Unicode 17.0.0 `UnicodeData.txt`
+from <https://www.unicode.org/Public/17.0.0/ucd/>, then run:
+
+```sh
+python3 tools/generate-categories.py /path/to/UnicodeData.txt > sml/UnicodeCategories.sml
+```
+
+The generator checks a pinned source hash. The Unicode data license is
+included in `sml/unicode-license.txt` alongside the generated table.

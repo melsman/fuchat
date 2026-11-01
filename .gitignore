@@ -6,3 +6,6 @@
 /qwen-f16.c
 /build/
 MLB/
+
+/lib/
+__pycache__/

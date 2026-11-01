@@ -1,0 +1,16 @@
+$(SML_LIB)/basis/basis.mlb
+../lib/github.com/diku-dk/sml-unicode/unicode-normalise.mlb
+../build/qwen.sig
+../build/qwen.sml
+Util.sml
+Gguf.sml
+Weights.sml
+Engine.sml
+Inspect.sml
+UnicodeCategories.sml
+Unicode.sml
+PreTokenizer.sml
+Tokenizer.sml
+Chat.sml
+Protocol.sml
+Main.sml

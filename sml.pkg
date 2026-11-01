@@ -1,0 +1,3 @@
+require {
+  github.com/diku-dk/sml-unicode 0.2.0 #f509a0b73dcfb313f087b968628d89634db06268
+}
