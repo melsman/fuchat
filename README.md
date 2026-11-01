@@ -130,7 +130,10 @@ and logical cache reuse without reloading weights.
 
 Thinking is off by default. Start with `--think`, or use `think` and `nothink`
 during a conversation. Reasoning is captured separately from the answer and
-hidden in normal output. `show` displays the full prompts and generated output,
+hidden in normal output. Progress on stderr reports prompt processing and
+hidden thinking/tool tokens, with updates at most once every five seconds
+within a phase. The sequential C backend can take minutes to finish reasoning.
+`show` displays the full prompts and generated output,
 including reasoning and tool payloads; `hide` returns to answer-only output.
 Reasoning is retained during tool follow-ups and removed from older assistant
 messages when the next user turn is formatted, following the Qwen3 template.

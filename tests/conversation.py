@@ -330,6 +330,12 @@ def main():
             assert len(lines) == len(cases), (len(lines), len(cases))
             for i, (test, line) in enumerate(zip(cases, lines)):
                 actual = json.loads(line)
+                progress = actual.pop('progress')
+                if actual['prompts']:
+                    assert progress[0] == dict(phase='prompt', tokens=0), (i, progress)
+                    assert progress[-1]['phase'] == 'done', (i, progress)
+                if i == 0:
+                    assert any(p['phase'] == 'thinking' and p['tokens'] > 0 for p in progress)
                 expected, warnings = expected_session(test, tokenizer, eos, tools, server, template)
                 assert bool(actual.pop('warnings')) == warnings, (i, test, actual)
                 assert actual == expected, (i, test, actual, expected)

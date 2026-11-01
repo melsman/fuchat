@@ -17,6 +17,7 @@ Chat.sml
 ../build/ToolEntries.sml
 Tools.sml
 Capture.sml
+Progress.sml
 Session.sml
 Protocol.sml
 Main.sml

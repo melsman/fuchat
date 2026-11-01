@@ -113,7 +113,8 @@ structure Main = struct
                     fun execute (call:ToolCall.t) =
                         let val result = Tools.run (!tools) (#ctx engine) call
                         in Util.log ("Tool " ^ Json.quote (#name call) ^ ": " ^ result); result end
-                    val result = Session.reply tokenizer options generate execute emit Util.log
+                    val progress = Progress.create Util.log (fn () => Time.toReal (Time.-(Time.now (),started)))
+                    val result = Session.reply tokenizer options generate execute emit Util.log (Progress.update progress)
                                                (!messages @ [Chat.simple "user" input])
                     val () = if #total result=0 then () else messages:= #messages result
                     val elapsed = Time.toReal (Time.-(Time.now (),started))

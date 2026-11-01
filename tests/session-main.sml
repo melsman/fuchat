@@ -1,5 +1,27 @@
 (* Replay scripted model token batches through the production Session module,
    while executing real typed Futhark tools in a weight-free context. *)
+local
+  val clock = ref 0.0
+  val lines = ref ([]:string list)
+  val progress = Progress.create (fn text => lines:=text:: !lines) (fn () => !clock)
+  val update = Progress.update progress
+  val () = update (Progress.Prompt 10,0)
+  val () = update (Progress.Thinking,1)
+  val () = clock:=4.0
+  val () = update (Progress.Thinking,3)
+  val () = clock:=5.0
+  val () = update (Progress.Thinking,7)
+  val () = update (Progress.Tool,8)
+  val () = update (Progress.Answer,9)
+  val () = clock:=20.0
+  val () = update (Progress.Answer,12)
+  val () = update (Progress.Done,12)
+  val expected = ["Processing prompt (10 tokens)...", "Thinking: 1 tokens (0.0s elapsed)",
+                  "Thinking: 7 tokens (5.0s elapsed)", "Preparing tool call: 8 tokens (5.0s elapsed)"]
+in
+  val () = if List.rev (!lines)=expected then () else raise Fail "progress throttling or phase transitions failed"
+end
+
 val model = Gguf.load (hd (CommandLine.arguments ()))
 val tokenizer = Tokenizer.create model
 val eos = Gguf.integer model "tokenizer.ggml.eos_token_id"
@@ -13,6 +35,7 @@ fun process test =
       val executions = ref ([]:Json.t list)
       val output = ref ([]:string list)
       val warnings = ref ([]:string list)
+      val progress = ref ([]:Json.t list)
       val messages = ref (case Json.get test "messages" of Json.Array ms => List.map Chat.fromJson ms | _ => [])
       fun execute enabled call =
           let val result = Tools.run enabled ctx call
@@ -42,8 +65,12 @@ fun process test =
                 in {ids=all,newTokens=new,reused=reused,eos=eos} end
             val text = Json.string (Json.get input "input")
             val proposed = !messages @ [Chat.simple "user" text]
+            fun status (phase,tokens) =
+                let val name = case phase of Progress.Prompt _ => "prompt" | Progress.Thinking => "thinking"
+                             | Progress.Tool => "tool" | Progress.Answer => "answer" | Progress.Done => "done"
+                in progress:=Json.Object [("phase",Json.String name),("tokens",Json.Number (Int.toString tokens))]:: !progress end
             val result = Session.reply tokenizer options generate (execute (#tools options))
-                         (fn text => output:=text:: !output) (fn text => warnings:=text:: !warnings) proposed
+                         (fn text => output:=text:: !output) (fn text => warnings:=text:: !warnings) status proposed
           in messages:= #messages result end
       fun run () =
           (List.app turn (Json.array (Json.get test "turns"));
@@ -51,6 +78,7 @@ fun process test =
              ("visible",Json.String (String.concat (List.rev (!output)))),
              ("warnings",Json.Array (List.map Json.String (List.rev (!warnings)))),
              ("prompts",Json.Array (List.rev (!prompts))),
+             ("progress",Json.Array (List.rev (!progress))),
              ("executions",Json.Array (List.rev (!executions)))])
     in Util.finally run (fn () => qwen.Context.free ctx) end
 val () = Protocol.lines (List.nth(CommandLine.arguments (),1))

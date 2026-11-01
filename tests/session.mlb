@@ -16,6 +16,7 @@ $(SML_LIB)/basis/basis.mlb
 ../build/ToolEntries.sml
 ../sml/Tools.sml
 ../sml/Capture.sml
+../sml/Progress.sml
 ../sml/Session.sml
 ../sml/Protocol.sml
 session-main.sml

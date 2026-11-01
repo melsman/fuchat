@@ -3,7 +3,7 @@
 structure Session = struct
   type options = {thinking:bool, tools:bool, show:bool, count:int, limit:int, context:int, maxToolRounds:int}
   type generation = {ids:int vector, newTokens:int vector, reused:int, eos:int}
-  fun reply tokenizer (options:options) (generate:int vector -> int -> generation) execute emit warn messages =
+  fun reply tokenizer (options:options) (generate:int vector -> int -> generation) execute emit warn progress messages =
       let
         val remaining = ref (#limit options)
         val total = ref 0
@@ -19,6 +19,7 @@ structure Session = struct
                 if Vector.length ids > #context options then (warn "Context is full; use clear or a shorter message."; history)
                 else
                   let
+                    val () = progress (Progress.Prompt (Vector.length ids),!total)
                     val () = if #show options then emit (text ^ "\n") else ()
                     val capture = Capture.create tokenizer
                     val pending = ref ""
@@ -43,6 +44,9 @@ structure Session = struct
                                 else let val normal = Capture.feed capture id
                                      in stream (if #show options then Tokenizer.raw tokenizer (Vector.fromList [id]) else normal) end
                             val () = Vector.app token new
+                            val phase = case !(#mode capture) of Capture.Reasoning => Progress.Thinking
+                                          | Capture.Tool => Progress.Tool | Capture.Answer => Progress.Answer
+                            val () = if #show options then () else progress (phase,!total)
                           in if !eos then true else if n=0 then false else step(#ids result,false) end
                     val complete = step(ids,true)
                     val () = emit (#1 (Unicode.clean true (!pending)) ^ "\n")
@@ -64,5 +68,6 @@ structure Session = struct
                   end
               end
         val result = round messages 0
+        val () = progress (Progress.Done,!total)
       in {messages=result,total= !total,reused=Option.getOpt(!reusedFirst,0)} end
 end
